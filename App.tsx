@@ -23,28 +23,36 @@ type Message = {
 const WELCOME: Message = {
   id: 'welcome',
   role: 'bot',
-  text: "Hi — I'm Chatbot. Ask me anything about this app, or just say hello.",
+  text: "Hi — I'm Chatbot, powered by OpenAI. Ask me anything.",
 };
 
-function replyTo(input: string): string {
-  const q = input.trim().toLowerCase();
-  if (!q) return 'Send a message and I’ll respond.';
-  if (/(hi|hello|hey)\b/.test(q)) {
-    return 'Hello! This same UI runs on web and mobile via Expo.';
+const CHAT_API_URL = process.env.EXPO_PUBLIC_CHAT_API_URL ?? '/api/chat';
+
+async function askOpenAI(history: Message[], userText: string): Promise<string> {
+  const messages = [
+    ...history
+      .filter((m) => m.id !== 'welcome')
+      .map((m) => ({
+        role: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+        content: m.text,
+      })),
+    { role: 'user' as const, content: userText },
+  ];
+
+  const res = await fetch(CHAT_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+  });
+
+  const data = (await res.json()) as { reply?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error ?? `Request failed (${res.status})`);
   }
-  if (/help|what can you/.test(q)) {
-    return 'I’m a starter chatbot. Try greetings, asking about the stack, or deploying to Vercel.';
+  if (!data.reply) {
+    throw new Error('Empty reply from server');
   }
-  if (/mobile|ios|android/.test(q)) {
-    return 'Run `npx expo start` locally, then open on iOS Simulator, Android emulator, or Expo Go.';
-  }
-  if (/web|vercel|deploy/.test(q)) {
-    return 'The web build is exported with Expo and hosted on Vercel as a static site.';
-  }
-  if (/stack|tech|built/.test(q)) {
-    return 'Built with Expo + React Native (TypeScript), one codebase for mobile and web.';
-  }
-  return `You said: “${input.trim()}”. I’m a local demo bot — wire me to an API when you’re ready.`;
+  return data.reply;
 }
 
 export default function App() {
@@ -53,7 +61,7 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<Message>>(null);
 
-  const send = useCallback(() => {
+  const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || sending) return;
 
@@ -63,23 +71,37 @@ export default function App() {
       text,
     };
 
+    const historySnapshot = messages;
     setDraft('');
     setSending(true);
     setMessages((prev) => [...prev, userMsg]);
 
-    setTimeout(() => {
+    try {
+      const reply = await askOpenAI(historySnapshot, text);
       const botMsg: Message = {
         id: `b-${Date.now()}`,
         role: 'bot',
-        text: replyTo(text),
+        text: reply,
       };
       setMessages((prev) => [...prev, botMsg]);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Something went wrong talking to OpenAI.';
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `e-${Date.now()}`,
+          role: 'bot',
+          text: `Sorry — ${message}`,
+        },
+      ]);
+    } finally {
       setSending(false);
       requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated: true });
       });
-    }, 350);
-  }, [draft, sending]);
+    }
+  }, [draft, sending, messages]);
 
   return (
     <View style={styles.root}>
@@ -87,7 +109,7 @@ export default function App() {
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
           <Text style={styles.brand}>Chatbot</Text>
-          <Text style={styles.tagline}>Mobile & web · Expo</Text>
+          <Text style={styles.tagline}>OpenAI · Expo · Vercel</Text>
         </View>
 
         <KeyboardAvoidingView
@@ -125,17 +147,21 @@ export default function App() {
               style={styles.input}
               value={draft}
               onChangeText={setDraft}
-              placeholder="Message Chatbot…"
+              placeholder={sending ? 'Thinking…' : 'Message Chatbot…'}
               placeholderTextColor="#7a8a94"
               multiline
               maxLength={2000}
-              onSubmitEditing={send}
+              onSubmitEditing={() => {
+                void send();
+              }}
               blurOnSubmit={false}
               returnKeyType="send"
               editable={!sending}
             />
             <Pressable
-              onPress={send}
+              onPress={() => {
+                void send();
+              }}
               disabled={!draft.trim() || sending}
               style={({ pressed }) => [
                 styles.send,
@@ -145,7 +171,7 @@ export default function App() {
               accessibilityRole="button"
               accessibilityLabel="Send message"
             >
-              <Text style={styles.sendLabel}>Send</Text>
+              <Text style={styles.sendLabel}>{sending ? '…' : 'Send'}</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>

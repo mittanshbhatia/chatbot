@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "@vercel/node": "^5.8.23",
     "typescript": "~6.0.3"
   },
   "scripts": {
