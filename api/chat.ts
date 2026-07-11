@@ -1,12 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { mediaKindFromMime, storageStrategyFor } from '../../lib/media';
+import { mediaKindFromMime, storageStrategyFor } from './_lib/media';
 import {
   appendMessages,
   getOrCreateConversation,
   loadMessages,
   uploadMediaObject,
-} from '../../lib/server/chatStore';
-import { getServiceSupabase, resolveAppUser, userFromBearer } from '../../lib/server/supabase';
+} from './_lib/chatStore';
+import { getServiceSupabase, resolveAppUser, userFromBearer } from './_lib/supabase';
 
 type ChatRole = 'user' | 'assistant' | 'system';
 

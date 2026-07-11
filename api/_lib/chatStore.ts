@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { MEDIA_BUCKET, type MediaKind } from '../media';
+import { MEDIA_BUCKET, type MediaKind } from './media';
 
 export type StoredMessage = {
   id: string;
