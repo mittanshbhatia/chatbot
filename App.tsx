@@ -11,6 +11,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { Session } from '@supabase/supabase-js';
+import * as DocumentPicker from 'expo-document-picker';
+import { AuthScreen } from './components/AuthScreen';
+import { mediaKindFromMime } from './lib/media';
+import { supabase } from './lib/supabase';
 
 type Role = 'user' | 'bot';
 
@@ -20,15 +25,36 @@ type Message = {
   text: string;
 };
 
+type Attachment = {
+  fileName: string;
+  mimeType: string;
+  base64: string;
+};
+
 const WELCOME: Message = {
   id: 'welcome',
   role: 'bot',
-  text: "Hi — I'm Chatbot, powered by OpenAI. Ask me anything.",
+  text: "Hi — I'm Chatbot. Sign in is required so your account is saved in Supabase.",
 };
 
 const CHAT_API_URL = process.env.EXPO_PUBLIC_CHAT_API_URL ?? '/api/chat';
 
-async function askOpenAI(history: Message[], userText: string): Promise<string> {
+async function fileToBase64(uri: string): Promise<string> {
+  const res = await fetch(uri);
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary);
+}
+
+async function askOpenAI(
+  history: Message[],
+  userText: string,
+  accessToken: string,
+  conversationId: string | null,
+  attachment?: Attachment | null,
+): Promise<{ reply: string; conversationId: string }> {
   const messages = [
     ...history
       .filter((m) => m.id !== 'welcome')
@@ -41,49 +67,106 @@ async function askOpenAI(history: Message[], userText: string): Promise<string> 
 
   const res = await fetch(CHAT_API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      messages,
+      conversationId,
+      attachment: attachment ?? undefined,
+    }),
   });
 
-  const data = (await res.json()) as { reply?: string; error?: string };
+  const data = (await res.json()) as {
+    reply?: string;
+    conversationId?: string;
+    error?: string;
+  };
   if (!res.ok) {
     throw new Error(data.error ?? `Request failed (${res.status})`);
   }
-  if (!data.reply) {
+  if (!data.reply || !data.conversationId) {
     throw new Error('Empty reply from server');
   }
-  return data.reply;
+  return { reply: data.reply, conversationId: data.conversationId };
 }
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([WELCOME]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<Attachment | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
+
+  const onAuthenticated = useCallback((next: Session) => {
+    setSession(next);
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setMessages([WELCOME]);
+    setConversationId(null);
+    setAttachment(null);
+  }, []);
+
+  const pickAttachment = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      multiple: false,
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    const mimeType = asset.mimeType ?? 'application/octet-stream';
+    const base64 = await fileToBase64(asset.uri);
+    setAttachment({
+      fileName: asset.name,
+      mimeType,
+      base64,
+    });
+  }, []);
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if ((!text && !attachment) || sending || !session?.access_token) return;
+
+    const displayText = attachment
+      ? `${text || '(attachment)'} [${mediaKindFromMime(attachment.mimeType)}: ${attachment.fileName}]`
+      : text;
 
     const userMsg: Message = {
       id: `u-${Date.now()}`,
       role: 'user',
-      text,
+      text: displayText,
     };
 
     const historySnapshot = messages;
+    const attachmentSnapshot = attachment;
     setDraft('');
+    setAttachment(null);
     setSending(true);
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      const reply = await askOpenAI(historySnapshot, text);
-      const botMsg: Message = {
-        id: `b-${Date.now()}`,
-        role: 'bot',
-        text: reply,
-      };
-      setMessages((prev) => [...prev, botMsg]);
+      const { reply, conversationId: nextConversationId } = await askOpenAI(
+        historySnapshot,
+        text || `Please review the attached ${mediaKindFromMime(attachmentSnapshot!.mimeType)}.`,
+        session.access_token,
+        conversationId,
+        attachmentSnapshot,
+      );
+      setConversationId(nextConversationId);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `b-${Date.now()}`,
+          role: 'bot',
+          text: reply,
+        },
+      ]);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Something went wrong talking to OpenAI.';
@@ -101,15 +184,33 @@ export default function App() {
         listRef.current?.scrollToEnd({ animated: true });
       });
     }
-  }, [draft, sending, messages]);
+  }, [draft, sending, messages, session, conversationId, attachment]);
+
+  if (!session) {
+    return (
+      <View style={styles.root}>
+        <StatusBar style="dark" />
+        <SafeAreaView style={[styles.safe, styles.authSafe]}>
+          <Text style={styles.brand}>Chatbot</Text>
+          <Text style={styles.tagline}>Supabase auth · SQL text · Storage media</Text>
+          <AuthScreen onAuthenticated={onAuthenticated} />
+        </SafeAreaView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
-          <Text style={styles.brand}>Chatbot</Text>
-          <Text style={styles.tagline}>OpenAI · Expo · Vercel</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.brand}>Chatbot</Text>
+            <Text style={styles.tagline}>{session.user.email}</Text>
+          </View>
+          <Pressable onPress={() => void signOut()} style={styles.signOut}>
+            <Text style={styles.signOutLabel}>Sign out</Text>
+          </Pressable>
         </View>
 
         <KeyboardAvoidingView
@@ -142,7 +243,21 @@ export default function App() {
             )}
           />
 
+          {attachment ? (
+            <Text style={styles.attachHint}>
+              Attached {mediaKindFromMime(attachment.mimeType)}: {attachment.fileName}
+            </Text>
+          ) : null}
+
           <View style={styles.composer}>
+            <Pressable
+              onPress={() => void pickAttachment()}
+              style={styles.attach}
+              accessibilityRole="button"
+              accessibilityLabel="Attach file"
+            >
+              <Text style={styles.attachLabel}>+</Text>
+            </Pressable>
             <TextInput
               style={styles.input}
               value={draft}
@@ -162,10 +277,10 @@ export default function App() {
               onPress={() => {
                 void send();
               }}
-              disabled={!draft.trim() || sending}
+              disabled={(!draft.trim() && !attachment) || sending}
               style={({ pressed }) => [
                 styles.send,
-                (!draft.trim() || sending) && styles.sendDisabled,
+                ((!draft.trim() && !attachment) || sending) && styles.sendDisabled,
                 pressed && styles.sendPressed,
               ]}
               accessibilityRole="button"
@@ -188,6 +303,11 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
   },
+  authSafe: {
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    gap: 14,
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: Platform.OS === 'web' ? 20 : 8,
@@ -195,6 +315,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#c5d6db',
     backgroundColor: 'rgba(232, 242, 244, 0.92)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  headerText: {
+    flex: 1,
   },
   brand: {
     fontSize: 28,
@@ -213,6 +340,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#4d6670',
     letterSpacing: 0.2,
+  },
+  signOut: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#d9e8ec',
+  },
+  signOutLabel: {
+    color: '#0f5c6b',
+    fontWeight: '700',
+    fontSize: 13,
   },
   body: {
     flex: 1,
@@ -251,6 +389,12 @@ const styles = StyleSheet.create({
   bubbleTextBot: {
     color: '#132830',
   },
+  attachHint: {
+    paddingHorizontal: 16,
+    paddingBottom: 6,
+    color: '#4d6670',
+    fontSize: 12,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -260,6 +404,20 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#c5d6db',
     backgroundColor: '#f4fafb',
+  },
+  attach: {
+    height: 44,
+    width: 44,
+    borderRadius: 14,
+    backgroundColor: '#d9e8ec',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachLabel: {
+    fontSize: 24,
+    color: '#0f5c6b',
+    fontWeight: '600',
+    marginTop: -2,
   },
   input: {
     flex: 1,
