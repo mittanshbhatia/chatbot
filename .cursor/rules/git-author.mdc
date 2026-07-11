@@ -1,0 +1,22 @@
+---
+description: All git commits and pushes must use Mittansh Bhatia, never cursoragent
+alwaysApply: true
+---
+
+# Git author identity
+
+When creating commits or pushing to GitHub for this project:
+
+- Author and committer **must** be **Mittansh Bhatia** `<mittanshbhatia@users.noreply.github.com>`
+- **Never** use `cursoragent`, Cursor bot, or any AI/agent identity as author or committer
+- Prefer setting these per commit if needed:
+
+```bash
+export GIT_AUTHOR_NAME='Mittansh Bhatia'
+export GIT_AUTHOR_EMAIL='mittanshbhatia@users.noreply.github.com'
+export GIT_COMMITTER_NAME='Mittansh Bhatia'
+export GIT_COMMITTER_EMAIL='mittanshbhatia@users.noreply.github.com'
+```
+
+- Do not invite or add `cursoragent` as a GitHub collaborator
+- Do not amend history unless the user explicitly asks
