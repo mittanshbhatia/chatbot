@@ -36,6 +36,15 @@ export type AppUserRow = {
   login_count: number | null;
 };
 
+function isMissingRelation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return (
+    error.code === 'PGRST205' ||
+    error.code === '42P01' ||
+    /Could not find the table|relation .* does not exist/i.test(error.message ?? '')
+  );
+}
+
 /** Upsert into this project's `profiles` table (linked to auth.users). */
 export async function trackLoginUser(input: {
   id: string;
@@ -45,6 +54,13 @@ export async function trackLoginUser(input: {
 }): Promise<AppUserRow> {
   const supabase = getServiceSupabase();
   const email = input.email.toLowerCase().trim();
+  const fallback: AppUserRow = {
+    id: input.id,
+    email,
+    display_name: input.name ?? email.split('@')[0],
+    provider: input.provider,
+    login_count: 1,
+  };
 
   const { data: existing, error: findError } = await supabase
     .from('profiles')
@@ -52,7 +68,10 @@ export async function trackLoginUser(input: {
     .eq('id', input.id)
     .maybeSingle();
 
-  if (findError) throw findError;
+  if (findError) {
+    if (isMissingRelation(findError)) return fallback;
+    throw findError;
+  }
 
   if (existing) {
     const { data, error } = await supabase
@@ -68,7 +87,10 @@ export async function trackLoginUser(input: {
       .eq('id', existing.id)
       .select('id, email, display_name, provider, login_count')
       .single();
-    if (error) throw error;
+    if (error) {
+      if (isMissingRelation(error)) return fallback;
+      throw error;
+    }
     return data as AppUserRow;
   }
 
@@ -85,7 +107,10 @@ export async function trackLoginUser(input: {
     .select('id, email, display_name, provider, login_count')
     .single();
 
-  if (error) throw error;
+  if (error) {
+    if (isMissingRelation(error)) return fallback;
+    throw error;
+  }
   return data as AppUserRow;
 }
 
